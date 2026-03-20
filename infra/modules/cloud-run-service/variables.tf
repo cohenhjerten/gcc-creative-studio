@@ -37,45 +37,9 @@ variable "resource_prefix" {
   description = "A short prefix for resource names."
 }
 
-variable "github_conn_name" {
-  type        = string
-  description = "The name of the Cloud Build GitHub connection."
-}
-
-variable "github_repo_owner" {
-  type        = string
-  description = "The owner of the GitHub repository."
-}
-
-variable "github_repo_name" {
-  type        = string
-  description = "The name of the GitHub repository."
-}
-
-variable "github_branch_name" {
-  type        = string
-  description = "The branch name to trigger builds from."
-}
-
-variable "cloudbuild_yaml_path" {
-  type        = string
-  description = "The path to the cloudbuild.yaml file."
-}
-
-variable "included_files_glob" {
-  type        = list(string)
-  description = "A list of glob patterns for files that should trigger the build."
-}
-
 variable "container_env_vars" {
   type        = map(string)
   description = "A map of environment variables for the Cloud Run container."
-  default     = {}
-}
-
-variable "build_substitutions" {
-  type        = map(string)
-  description = "A map of substitution variables for the Cloud Build trigger."
   default     = {}
 }
 
@@ -95,11 +59,6 @@ variable "scaling_max_instances" {
   type        = number
   description = "Maximum number of container instances."
   default     = 100
-}
-
-variable "source_repository_id" {
-  type        = string
-  description = "The ID of the Cloud Build V2 source repository."
 }
 
 variable "cpu" {

@@ -125,25 +125,6 @@ resource "google_cloud_run_v2_service" "this" {
   }
 }
 
-resource "google_cloudbuild_trigger" "this" {
-  name            = "${var.service_name}-trigger"
-  location        = var.gcp_region
-  service_account = google_service_account.trigger_sa.id
-  filename        = var.cloudbuild_yaml_path
-  substitutions   = merge(var.build_substitutions, {
-    _REPO_NAME = google_artifact_registry_repository.repo.name
-  })
-
-  repository_event_config {
-    repository = var.source_repository_id
-    push {
-      branch = "^${var.github_branch_name}$"
-    }
-  }
-
-  included_files = var.included_files_glob
-}
-
 # --- Common IAM Bindings ---
 resource "google_project_iam_member" "logging_writer_binding" {
   project = var.gcp_project_id

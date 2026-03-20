@@ -69,15 +69,6 @@ locals {
 }
 
 
-# --- Cloud Build Repository Connection ---
-resource "google_cloudbuildv2_repository" "source_repo" {
-  provider          = google-beta
-  name              = var.github_repo_name
-  location          = var.gcp_region
-  parent_connection = "projects/${var.gcp_project_id}/locations/${var.gcp_region}/connections/${var.github_conn_name}"
-  remote_uri        = "https://github.com/${var.github_repo_owner}/${var.github_repo_name}.git"
-}
-
 # Postgres Database related
 # 1. Read the Secret (Created by Bootstrap script)
 data "google_secret_manager_secret_version" "db_password" {
@@ -105,25 +96,12 @@ module "backend_service" {
   environment           = var.environment
   service_name          = var.backend_service_name
   resource_prefix       = "cs-be"
-  github_conn_name      = var.github_conn_name
-  github_repo_owner     = var.github_repo_owner
-  github_repo_name      = var.github_repo_name
-  github_branch_name    = var.github_branch_name
-  cloudbuild_yaml_path  = "backend/cloudbuild.yaml"
-  included_files_glob   = ["backend/**"]
   container_env_vars    = local.backend_env_vars
   runtime_secrets = var.backend_runtime_secrets
   custom_audiences      = var.backend_custom_audiences
   scaling_min_instances = 1
-  source_repository_id = google_cloudbuildv2_repository.source_repo.id
   cpu = var.be_cpu
   memory = var.be_memory
-  build_substitutions   = merge(var.be_build_substitutions,
-    {
-      _REGION = var.gcp_region
-      _SERVICE_NAME = var.backend_service_name
-    }
-  )
 
   # database
   cloud_sql_connection_name = module.postgresql.connection_name
@@ -142,29 +120,13 @@ resource "google_firebase_project" "default" {
 module "frontend_service" {
   source = "../firebase-hosting-service"
 
-  source_repository_id = google_cloudbuildv2_repository.source_repo.id
   gcp_project_id       = var.gcp_project_id
-  gcp_region            = var.gcp_region
+  gcp_region           = var.gcp_region
   firebase_project_id  = google_firebase_project.default.project
   service_name         = var.gcp_project_id
   environment          = var.environment
   resource_prefix      = "cs-fe"
-  github_branch_name   = var.github_branch_name
-  cloudbuild_yaml_path = "frontend/cloudbuild-deploy.yaml"
-  included_files_glob  = ["frontend/**"]
   firebase_site_id     = var.firebase_site_id != "" ? var.firebase_site_id : var.gcp_project_id
-
-  build_substitutions = merge(
-    var.fe_build_substitutions,
-    {
-      # This block should ONLY contain non-secret, underscore-prefixed values
-      _BACKEND_URL         = local.frontend_url # The frontend will redirect the api calls to the backend
-      _FE_SERVICE_NAME     = var.frontend_service_name
-      _BACKEND_SERVICE_ID  = var.backend_service_name
-      _FIREBASE_PROJECT_ID = var.gcp_project_id
-      _FIREBASE_SITE_ID    = var.firebase_site_id != "" ? var.firebase_site_id : var.gcp_project_id
-    }
-  )
 }
 
 module "frontend_secrets" {

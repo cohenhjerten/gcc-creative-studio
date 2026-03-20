@@ -7,12 +7,6 @@ backend_service_name  = "cstudio-backend-dev"
 frontend_service_name = "cstudio-frontend-dev" # This is the Cloud Run service name
 firebase_site_id      = "YOUR_FIREBASE_SITE_ID" # (Optional) Custom Firebase Hosting Site ID, defaults to the gcp_project_id
 
-# --- GitHub Repo Details ---
-github_conn_name   = "gh-repo-owner-con"
-github_repo_owner  = "RepoOwnerName"
-github_repo_name   = "repo-owner-gcc-creative-studio"
-github_branch_name = "develop"
-
 # --- Custom Audiences ---
 backend_custom_audiences  = ["YOUR_OAUTH_WEB_CLIENT_ID_HERE", "YOUR_GCP_PROJECT_ID"]
 frontend_custom_audiences = ["YOUR_OAUTH_WEB_CLIENT_ID_HERE", "YOUR_GCP_PROJECT_ID"]
@@ -32,10 +26,6 @@ be_env_vars = {
     GOOGLE_TOKEN_AUDIENCE = "YOUR_OAUTH_WEB_CLIENT_ID_HERE"
     IDENTITY_PLATFORM_ALLOWED_ORGS = "" # If empty then any org is allowed
   }
-}
-
-fe_build_substitutions = {
-  _ANGULAR_BUILD_COMMAND = "build-dev"
 }
 
 frontend_secrets = [
@@ -60,7 +50,6 @@ backend_runtime_secrets = {
 apis_to_enable = [
   "serviceusage.googleapis.com",     # Required to enable other APIs
   "iam.googleapis.com",              # Required for IAM management
-  "cloudbuild.googleapis.com",       # Required for Cloud Build
   "artifactregistry.googleapis.com", # Required for Artifact Registry
   "run.googleapis.com",              # Required for Cloud Run
   "cloudresourcemanager.googleapis.com",

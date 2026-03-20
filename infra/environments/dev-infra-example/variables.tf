@@ -45,27 +45,6 @@ variable "firebase_site_id" {
   default     = ""
 }
 
-# --- GitHub Repo Details ---
-variable "github_conn_name" {
-  type        = string
-  description = "The name of the Cloud Build GitHub connection."
-}
-
-variable "github_repo_owner" {
-  type        = string
-  description = "The owner of the GitHub repository."
-}
-
-variable "github_repo_name" {
-  type        = string
-  description = "The name of the GitHub repository."
-}
-
-variable "github_branch_name" {
-  type        = string
-  description = "The branch name to trigger builds from."
-}
-
 # --- Custom Audiences ---
 variable "backend_custom_audiences" {
   type        = list(string)
@@ -81,18 +60,6 @@ variable "frontend_custom_audiences" {
 variable "be_env_vars" {
   type        = map(map(string))
   description = "A map containing common and environment-specific variables for the backend."
-}
-
-variable "be_build_substitutions" {
-  type        = map(string)
-  description = "A map of substitution variables for the backend Cloud Build trigger."
-  default     = {}
-}
-
-variable "fe_build_substitutions" {
-  type        = map(string)
-  description = "A map of substitution variables for the frontend Cloud Build trigger."
-  default     = {}
 }
 
 variable "frontend_secrets" {
@@ -120,7 +87,6 @@ variable "apis_to_enable" {
   default = [
     "serviceusage.googleapis.com",     # Required to enable other APIs
     "iam.googleapis.com",              # Required for IAM management
-    "cloudbuild.googleapis.com",       # Required for Cloud Build
     "artifactregistry.googleapis.com", # Required for Artifact Registry
     "run.googleapis.com"               # Required for Cloud Run
   ]

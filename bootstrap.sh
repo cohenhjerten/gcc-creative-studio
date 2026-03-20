@@ -15,21 +15,21 @@
 
 
 # ==============================================================================
-# Creative Studio Infrastructure Bootstrap Script (Resumable)
+# Creative Studio Infrastructure Bootstrap Script (Standalone / Resumable)
 #
 # This interactive script guides a user through the entire process of setting
 # up the Creative Studio infrastructure in a new or existing Google Cloud project.
 # It saves progress and can be safely restarted if it fails.
+#
+# Usage: Clone the repo, cd into it, and run: ./bootstrap.sh
 # ==============================================================================
 
 set -e
 
 # --- Configuration ---
 REQUIRED_TERRAFORM_VERSION="1.14.1"
-UPSTREAM_REPO_URL="https://github.com/GoogleCloudPlatform/gcc-creative-studio"
 TEMPLATE_ENV_DIR="environments/dev-infra-example"
 DEFAULT_ENV_NAME="dev-infra"
-DEFAULT_BRANCH_NAME="main"
 GCS_BUCKET_SUFFIX_FORMAT="cstudio-%s-tfstate"
 GCS_BUCKET_PREFIX_FORMAT="infra/%s/state"
 BE_SERVICE_NAME="cstudio-be"
@@ -58,41 +58,14 @@ C_BLUE='\033[1;34m'    # Bold/Bright Blue for steps and prompts
 C_CYAN='\033[1;36m'    # Bold/Bright Cyan for general info
 
 # --- Helper Functions ---
-info() { echo -e "${C_CYAN}➡️  $1${C_RESET}"; }
-prompt() { echo -e "${C_BLUE}🤔  $1${C_RESET}"; }
-warn() { echo -e "${C_YELLOW}⚠️  $1${C_RESET}"; }
-fail() { echo -e "${C_RED}❌  $1${C_RESET}" >&2; exit 1; }
-success() { echo -e "${C_GREEN}✅  $1${C_RESET}"; }
+info() { echo -e "${C_CYAN}-->  $1${C_RESET}"; }
+prompt() { echo -e "${C_BLUE}?  $1${C_RESET}"; }
+warn() { echo -e "${C_YELLOW}!  $1${C_RESET}"; }
+fail() { echo -e "${C_RED}X  $1${C_RESET}" >&2; exit 1; }
+success() { echo -e "${C_GREEN}OK  $1${C_RESET}"; }
 step() { echo -e "\n${C_BLUE}--- Step $1: $2 ---${C_RESET}"; }
 
 # --- Pre-flight Checks & Auto-configuration ---
-
-# Function to automatically determine and set the Firebase Site ID in the .tfvars file
-configure_firebase_site_id() {
-  info "Checking Firebase Hosting Site configuration..."
-  local tfvars_file=$1
-  local project_id=$2
-
-  # Check if the site ID is still the placeholder value
-  if grep -q "YOUR_FIREBASE_SITE_ID" "$tfvars_file"; then
-    warn "Placeholder 'YOUR_FIREBASE_SITE_ID' found in ${tfvars_file}."
-    info "Querying Firebase for an existing default hosting site..."
-
-    # Query Firebase for sites and find the one marked as default (or the first one if none are default)
-    local default_site_name
-    # The `jq` filter first looks for a site with type "DEFAULT_SITE". If not found, it takes the first site in the list.
-    # The result is the full resource name, e.g., "projects/my-proj/sites/my-site-id".
-    default_site_name=$(firebase hosting:sites:list --project "$project_id" --json | jq -r 'first(.result.sites[] | select(.type == "DEFAULT_SITE") | .name) // first(.result.sites[].name) // ""')
-
-    # If a site was found, extract the site ID from the name. Otherwise, fall back to the project ID.
-    local site_id_to_use=$project_id
-    [ -n "$default_site_name" ] && site_id_to_use=$(basename "$default_site_name")
-
-    info "Setting 'firebase_site_id' to '${C_YELLOW}${site_id_to_use}${C_RESET}' in ${tfvars_file}."
-    sed -i.bak "s/YOUR_FIREBASE_SITE_ID/${site_id_to_use}/" "$tfvars_file" && rm "${tfvars_file}.bak"
-  fi
-}
-
 
 # A reusable function to prompt for a value and update the .tfvars file
 prompt_and_update_tfvar() {
@@ -133,7 +106,7 @@ read_state() {
 # --- Database Connectivity Helpers ---
 start_sql_proxy() {
     info "Starting Cloud SQL Auth Proxy..."
-    
+
     # 1. Get Instance Connection Name
     # Try Terraform output first, fallback to gcloud
     pushd "$REPO_ROOT/infra/environments/$ENV_NAME" > /dev/null
@@ -160,7 +133,7 @@ start_sql_proxy() {
     ./cloud-sql-proxy --address 0.0.0.0 --port 5432 "$DB_INSTANCE_NAME" > /dev/null 2>&1 &
     PROXY_PID=$!
     export PROXY_PID
-    
+
     # 4. Wait for Readiness
     echo -n "   Waiting for proxy connection..."
     for i in {1..30}; do
@@ -186,7 +159,7 @@ stop_sql_proxy() {
 export_db_vars() {
     # Fetch password from Secret Manager
     DB_PASS=$(gcloud secrets versions access latest --secret="creative-studio-db-password" --project="$GCP_PROJECT_ID")
-    
+
     export DB_USER="studio_user"
     export DB_PASS="$DB_PASS"
     export DB_NAME="creative_studio"
@@ -323,72 +296,74 @@ setup_project() {
     success "Project '$GCP_PROJECT_ID' is configured."
 }
 
-setup_repo() {
-    step 4 "Configuring Git Repository"
+detect_repo_root() {
+    step 4 "Detecting Repository Root"
 
-    # Since the script is run via curl, it never starts inside a repo. We must clone it.
-    warn "Please fork the main repository first: ${UPSTREAM_REPO_URL}/fork"
-    while true; do
-        prompt "What is the git URL of YOUR forked repository? (e.g., https://github.com/user/repo.git)"
-        read -p "   Git URL: " GITHUB_REPO_URL < /dev/tty
-        if [ -z "$GITHUB_REPO_URL" ]; then warn "Repository URL cannot be empty."; continue; fi
-        info "Validating repository URL..."
-        if git ls-remote --exit-code -h "$GITHUB_REPO_URL" > /dev/null 2>&1; then
-            success "Repository found."; break
-        else warn "Repository not found at that URL. Please check for typos and try again."; fi
-    done
+    # Detect the repo root from the script's own location
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    # --- Ask for Branch ---
-    prompt "Which git branch would you like to use? (default: main)"
-    read -p "   Branch Name: " SELECTED_BRANCH < /dev/tty
-    SELECTED_BRANCH=${SELECTED_BRANCH:-main}
-    DEFAULT_BRANCH_NAME="$SELECTED_BRANCH"
-
-    local REPO_CLONE_DIR=$(basename "$GITHUB_REPO_URL" .git)
-
-    if [[ -d "$REPO_CLONE_DIR" ]]; then
-        warn "Directory '$REPO_CLONE_DIR' already exists."; prompt "Do you want to use this existing directory? (y/n)"; read -r REPLY < /dev/tty
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then fail "Please remove the directory or run the script from a different location."; fi
+    if [[ -d "$SCRIPT_DIR/infra" && -f "$SCRIPT_DIR/bootstrap.sh" ]]; then
+        REPO_ROOT="$SCRIPT_DIR"
+    elif [[ -d "./infra" && -f "./bootstrap.sh" ]]; then
+        REPO_ROOT="$(pwd)"
     else
-        info "Performing a sparse checkout of '$REPO_CLONE_DIR' (Branch: $SELECTED_BRANCH)..."
-        
-        # 1. Clone with -b branch_name
-        git clone --filter=blob:none --no-checkout --depth 1 --sparse -b "$SELECTED_BRANCH" "$GITHUB_REPO_URL" "$REPO_CLONE_DIR"
-        
-        cd "$REPO_CLONE_DIR"
-        
-        # 2. Sparse checkout for ROOT folders only
-        git sparse-checkout set "infra" "backend" "frontend" "bootstrap.sh"
-        
-        git checkout
-        cd ..
-
-        success "Repository cloned successfully."
+        fail "Could not find a valid project structure. Please run this script from the repository root directory (the directory containing 'infra/' and 'bootstrap.sh')."
     fi
 
-    # --- Project Path Verification ---
-    info "Verifying project structure..."
-
-    # Check if the project is at the top level
-    if [[ -d "$REPO_CLONE_DIR/infra" && -f "$REPO_CLONE_DIR/bootstrap.sh" ]]; then
-        info "Detected project structure."
-    else
-        warn "Directory listing of clone:"
-        ls -F "$REPO_CLONE_DIR/"
-        fail "Could not find a valid project structure. The script requires an 'infra' directory and 'bootstrap.sh' file at the root."
-    fi
-
-    cd "$REPO_CLONE_DIR"
-
-    REPO_ROOT=$(pwd)
     export REPO_ROOT
-    success "Project root successfully set to: $REPO_ROOT"
+    success "Project root set to: $REPO_ROOT"
+}
 
-    GITHUB_REPO_OWNER=$(git remote get-url origin | sed -n 's/.*github.com\/\(.*\)\/.*/\1/p')
-    GITHUB_REPO_NAME=$REPO_CLONE_DIR
+cleanup_previous() {
+    step "0" "Checking for Previous Installation"
+    prompt "Would you like to clean up resources from a previous installation attempt? (y/n)"
+    read -r REPLY < /dev/tty
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        info "Skipping cleanup."
+        return
+    fi
 
-    info "Detected GitHub owner: $GITHUB_REPO_OWNER"
-    info "Detected GitHub repo name: $GITHUB_REPO_NAME"
+    warn "This will remove local environment directories and state files."
+    warn "It will NOT destroy any cloud resources (use 'terraform destroy' for that)."
+
+    # Clean up local environment directories (except the template)
+    if [ -d "$REPO_ROOT/infra/environments" ]; then
+        for dir in "$REPO_ROOT/infra/environments"/*/; do
+            local dir_name=$(basename "$dir")
+            if [ "$dir_name" != "dev-infra-example" ]; then
+                prompt "Remove environment directory '$dir_name'? (y/n)"
+                read -r REPLY < /dev/tty
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    rm -rf "$dir"
+                    success "Removed '$dir_name'."
+                fi
+            fi
+        done
+    fi
+
+    # Clean up Cloud SQL proxy binary
+    if [ -f "$REPO_ROOT/cloud-sql-proxy" ]; then
+        rm -f "$REPO_ROOT/cloud-sql-proxy"
+        info "Removed cloud-sql-proxy binary."
+    fi
+
+    # Clean up Python venv
+    if [ -d "$REPO_ROOT/backend/.venv" ]; then
+        prompt "Remove Python virtual environment (backend/.venv)? (y/n)"
+        read -r REPLY < /dev/tty
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$REPO_ROOT/backend/.venv"
+            info "Removed backend/.venv."
+        fi
+    fi
+
+    # Reset state
+    LAST_COMPLETED_STEP=0
+    ENV_NAME=""
+    GCP_PROJECT_ID=""
+
+    success "Cleanup complete. Starting fresh."
 }
 
 configure_environment() {
@@ -422,54 +397,31 @@ configure_environment() {
         mv "$ENV_DIR/dev.tfvars" "$TFVARS_FILE_PATH"
 
         sed -i.bak "s|^[#[:space:]]*gcp_project_id[[:space:]]*=.*|gcp_project_id = \"$GCP_PROJECT_ID\"|g" "$TFVARS_FILE_PATH"
-        sed -i.bak "s|^[#[:space:]]*github_repo_owner[[:space:]]*=.*|github_repo_owner = \"$GITHUB_REPO_OWNER\"|g" "$TFVARS_FILE_PATH"
-        sed -i.bak "s|^[#[:space:]]*github_repo_name[[:space:]]*=.*|github_repo_name = \"$GITHUB_REPO_NAME\"|g" "$TFVARS_FILE_PATH"
 
         # Set service names automatically
         info "Default service names will be '$BE_SERVICE_NAME' and '$FE_SERVICE_NAME'."
         sed -i.bak "s|^[#[:space:]]*backend_service_name[[:space:]]*=.*|backend_service_name = \"$BE_SERVICE_NAME\"|g" "$TFVARS_FILE_PATH"
         sed -i.bak "s|^[#[:space:]]*frontend_service_name[[:space:]]*=.*|frontend_service_name = \"$FE_SERVICE_NAME\"|g" "$TFVARS_FILE_PATH"
 
-        # --- Discover and Set Firebase Site ID ---
-        # This function will query Firebase for the default site and update the
-        # 'YOUR_FIREBASE_SITE_ID' placeholder in the .tfvars file.
-        configure_firebase_site_id "$TFVARS_FILE_PATH" "$GCP_PROJECT_ID"
-        # After discovery, read the final value into a global variable for later use
-        AUTO_FIREBASE_SITE_ID=$(grep 'firebase_site_id' "$TFVARS_FILE_PATH" | awk -F'"' '{print $2}')
+        # --- Auto-set Firebase Site ID to the project ID ---
+        info "Setting 'firebase_site_id' to '${C_YELLOW}${GCP_PROJECT_ID}${C_RESET}'."
+        sed -i.bak "s/YOUR_FIREBASE_SITE_ID/${GCP_PROJECT_ID}/" "$TFVARS_FILE_PATH"
+        AUTO_FIREBASE_SITE_ID="$GCP_PROJECT_ID"
 
-        # Prompt only for the branch name
-        export TFVARS_FILE=$TFVARS_FILE_PATH # Set context for helper function
-        prompt "Please provide the following value:"
-        prompt_and_update_tfvar "GitHub Branch to deploy from" "$DEFAULT_BRANCH_NAME" "github_branch_name" "GITHUB_BRANCH"
-
-        write_state "ENV_NAME" "$ENV_NAME"; write_state "BE_SERVICE_NAME" "$BE_SERVICE_NAME"; write_state "FE_SERVICE_NAME" "$FE_SERVICE_NAME"; write_state "GITHUB_BRANCH" "$GITHUB_BRANCH"
+        rm -f "$TFVARS_FILE_PATH.bak"
+        write_state "ENV_NAME" "$ENV_NAME"; write_state "BE_SERVICE_NAME" "$BE_SERVICE_NAME"; write_state "FE_SERVICE_NAME" "$FE_SERVICE_NAME"
     else info "Environment directory '$ENV_DIR' already configured."; fi
     success "Configuration files for '$ENV_NAME' environment are ready."
 }
 
 handle_manual_steps() {
     step 6 "Manual Steps Required"; cd "$REPO_ROOT/infra"; TFVARS_FILE_PATH="$ENV_DIR/$ENV_NAME.tfvars"
-    info "Enabling required Google Cloud APIs..."; gcloud services enable cloudbuild.googleapis.com secretmanager.googleapis.com firebase.googleapis.com iap.googleapis.com identitytoolkit.googleapis.com texttospeech.googleapis.com workflows.googleapis.com --project="$GCP_PROJECT_ID"
-    if [ -z "$GITHUB_CONN_NAME" ]; then
-        prompt "\nDo you already have a Cloud Build Host Connection for GitHub in this project? (y/n)"; read -r REPLY < /dev/tty
-        if [[ $REPLY =~ ^[Yy]$ ]]; then prompt "Please enter the existing connection name:"; read -p "   Connection Name: " GITHUB_CONN_NAME < /dev/tty
-        else
-            warn "You will now be guided to create a new GitHub connection."; info "Please perform the following manual steps:"
-            echo "1. Open this URL in your browser:"; echo -e "   ${C_YELLOW}https://console.cloud.google.com/cloud-build/connections/create?project=${GCP_PROJECT_ID}${C_RESET}"
-            echo "2. Select 'GitHub (Cloud Build GitHub App)' and click 'CONTINUE'."
-            echo "3. Follow the prompts to authorize the app on your GitHub account."; 
-            echo "4. Grant access to your forked repository: '${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}'."
-            echo "5. After creating the connection, copy its name (e.g., 'gh-yourname-con')."
-            prompt "Paste the new Cloud Build Connection Name here:"; read -p "   Connection Name: " GITHUB_CONN_NAME < /dev/tty
-        fi
-        sed -i.bak "s|^[#[:space:]]*github_conn_name[[:space:]]*=.*|github_conn_name = \"$GITHUB_CONN_NAME\"|g" "$TFVARS_FILE_PATH"
-        write_state "GITHUB_CONN_NAME" "$GITHUB_CONN_NAME"
-    fi
+    info "Enabling required Google Cloud APIs..."; gcloud services enable secretmanager.googleapis.com firebase.googleapis.com iap.googleapis.com identitytoolkit.googleapis.com texttospeech.googleapis.com workflows.googleapis.com --project="$GCP_PROJECT_ID"
+
     warn "\nTerraform cannot accept legal terms on your behalf."; info "Please perform this one-time manual step for Firebase:"
     echo "1. Open this URL in your browser:"; echo -e "   ${C_YELLOW}https://console.firebase.google.com/?project=${GCP_PROJECT_ID}${C_RESET}"
     echo "2. You should be prompted to 'Add Firebase' to your existing project."; echo "3. Follow the prompts and accept the terms."
     prompt "Press [Enter] to continue after you have linked the project."; read -r < /dev/tty
-    rm -f "$TFVARS_FILE_PATH.bak"
 
     # --- Automate .tfvars placeholder replacement ---
     info "\nConfiguring OAuth Client ID and Project ID in .tfvars file..."
@@ -485,6 +437,7 @@ handle_manual_steps() {
 
     sed -i.bak "s|YOUR_OAUTH_WEB_CLIENT_ID_HERE|$AUTO_OAUTH_CLIENT_ID|g" "$TFVARS_FILE_PATH"
     sed -i.bak "s|YOUR_GCP_PROJECT_ID|$GCP_PROJECT_ID|g" "$TFVARS_FILE_PATH"
+    rm -f "$TFVARS_FILE_PATH.bak"
     success "Replaced placeholders in $TFVARS_FILE_PATH."
 }
 
@@ -561,26 +514,24 @@ populate_oauth_secrets() {
 }
 
 setup_db_secrets() {
-    step 9 "Configuring Database Secrets" # Renumber subsequent steps
-    
+    step 9 "Configuring Database Secrets"
+
     # 1. Enable required APIs first
     info "Enabling Secret Manager and SQL Admin APIs..."
     gcloud services enable secretmanager.googleapis.com sqladmin.googleapis.com --project="$GCP_PROJECT_ID"
 
     local SECRET_NAME="creative-studio-db-password"
-    
+
     # 2. Check if the secret already exists
     if gcloud secrets describe "$SECRET_NAME" --project="$GCP_PROJECT_ID" > /dev/null 2>&1; then
         info "Secret '$SECRET_NAME' already exists. Skipping creation."
     else
         info "Creating new secret '$SECRET_NAME'..."
-        
+
         # 3. Generate a secure random password (alphanumeric, no special chars that break URLs)
-        # using openssl. We use base64 but strip non-alphanumeric chars to be safe for DB connection strings
         local DB_PASSWORD=$(openssl rand -base64 20 | tr -dc 'a-zA-Z0-9' | head -c 16)
-        
+
         # 4. Create the secret and add the first version
-        # We use printf to avoid trailing newlines
         printf "%s" "$DB_PASSWORD" | gcloud secrets create "$SECRET_NAME" \
             --data-file=- \
             --replication-policy="automatic" \
@@ -632,7 +583,6 @@ update_secrets() {
             if [ -n "$APP_ID" ]; then
                 local SDK_CONFIG_JSON=$(firebase apps:sdkconfig WEB "$APP_ID" --project="$GCP_PROJECT_ID" --json)
 				AUTO_FIREBASE_API_KEY=$(echo "$SDK_CONFIG_JSON" | jq -r '.result.sdkConfig.apiKey // empty')
-                # ... (re-populate all other AUTO_... variables)
 				AUTO_FIREBASE_AUTH_DOMAIN=$(echo "$SDK_CONFIG_JSON" | jq -r '.result.sdkConfig.authDomain // empty')
 				AUTO_FIREBASE_PROJECT_ID=$(echo "$SDK_CONFIG_JSON" | jq -r '.result.sdkConfig.projectId // empty')
 				AUTO_FIREBASE_STORAGE_BUCKET=$(echo "$SDK_CONFIG_JSON" | jq -r '.result.sdkConfig.storageBucket // empty')
@@ -734,12 +684,9 @@ seed_data() {
 
     # Install dependencies from pyproject.toml into the virtual environment
     info "Installing Python project and its dependencies from 'backend/pyproject.toml'..."
-    # Use an editable install (-e) to ensure all project dependencies are installed.
     uv pip install --python "$VENV_DIR/bin/python" -e backend
 
     info "Executing Python bootstrap script..."
-    # We `cd` into the backend directory so that relative paths to assets inside the python script resolve correctly.
-    # The editable install ensures that `from src...` imports work without needing PYTHONPATH.
     if (cd backend && "$VENV_DIR/bin/python" -m bootstrap.bootstrap); then
         success "Python bootstrap script executed successfully."
     else
@@ -756,20 +703,10 @@ seed_data() {
 
 
 
-trigger_builds() {
-    step 14 "Triggering Initial Builds"; cd "$REPO_ROOT"
-    prompt "Would you like to trigger the initial builds for the frontend and backend now? (y/n)"; read -r REPLY < /dev/tty
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then info "You can trigger the builds manually later by pushing a commit or via the Cloud Build UI."; return; fi
-    info "Triggering backend build..."; gcloud builds triggers run "${BE_SERVICE_NAME}-trigger" --branch="$GITHUB_BRANCH" --project="$GCP_PROJECT_ID" --region="us-central1"
-    info "Triggering frontend build..."; gcloud builds triggers run "$GCP_PROJECT_ID-trigger" --branch="$GITHUB_BRANCH" --project $GCP_PROJECT_ID --region="us-central1"
-
-    success "Builds have been triggered."; info "You can monitor their progress in the Cloud Build console:"; echo -e "   ${C_YELLOW}https://console.cloud.google.com/cloud-build/builds?project=${GCP_PROJECT_ID}${C_RESET}"
-}
-
 # --- Main Execution ---
 main() {
     echo -e "${C_GREEN}============================================================${C_RESET}"
-    echo -e "${C_GREEN} 🚀  Welcome to the Creative Studio Infrastructure Setup 🚀 ${C_RESET}"
+    echo -e "${C_GREEN}  Creative Studio Infrastructure Setup (Standalone)  ${C_RESET}"
     echo -e "${C_GREEN}============================================================${C_RESET}"
 
     echo -e "${C_BLUE}"
@@ -780,11 +717,24 @@ main() {
     echo -e " ██████ ██   ██ ███████ ██   ██    ██    ██   ████   ███████     ███████    ██     ██████  ██████  ██  ██████   "
     echo -e "${C_RESET}"
 
+    # Detect repo root early so cleanup can use it
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -d "$SCRIPT_DIR/infra" && -f "$SCRIPT_DIR/bootstrap.sh" ]]; then
+        REPO_ROOT="$SCRIPT_DIR"
+    else
+        REPO_ROOT="$(pwd)"
+    fi
+
     read_state; LAST_COMPLETED_STEP=${LAST_COMPLETED_STEP:-0}
+
+    # Offer cleanup before starting
+    cleanup_previous
+
     declare -a steps_to_run=(
         "check_prerequisites"
         "check_and_install_terraform"
-        "setup_project" "setup_repo"
+        "setup_project" "detect_repo_root"
         "configure_environment"
         "handle_manual_steps"
         "setup_firebase_app"
@@ -794,7 +744,6 @@ main() {
         "update_oauth_client"
         "update_secrets"
         "seed_data"
-        "trigger_builds" 
     )
     for i in "${!steps_to_run[@]}"; do
         step_num=$((i + 1))
@@ -807,7 +756,7 @@ main() {
         fi
     done
 
-    step 14 "🎉 Deployment Complete! 🎉";
+    step 14 "Deployment Complete!"
     info "Fetching your application URLs...";
     cd "$REPO_ROOT/infra/environments/$ENV_NAME"
 
@@ -815,7 +764,6 @@ main() {
     FRONTEND_URL=$(terraform output -raw frontend_service_url 2>/dev/null || echo "")
     if [ -z "$FRONTEND_URL" ]; then
         warn "Could not find 'frontend_service_url' in Terraform outputs. Deducing from project ID."
-        # Construct the default Firebase Hosting URL using the discovered site ID
         if [ -n "$AUTO_FIREBASE_SITE_ID" ]; then
             FRONTEND_URL="https://${AUTO_FIREBASE_SITE_ID}.web.app"
         else
@@ -831,7 +779,14 @@ main() {
 
     success "Your infrastructure is ready."
     echo "------------------------------------------------------------------"; echo -e "   Frontend URL: ${C_YELLOW}${FRONTEND_URL}${C_RESET}"; echo -e "   Backend URL:  ${C_YELLOW}${BACKEND_URL}${C_RESET}"; echo "------------------------------------------------------------------"
-    info "It may take a few minutes for the builds to complete and the services to become available."
+    info "The infrastructure has been provisioned. You will need to build and deploy"
+    info "the frontend and backend applications separately."
+    info ""
+    info "To deploy the backend to Cloud Run:"
+    echo -e "   ${C_CYAN}cd backend && gcloud run deploy $BE_SERVICE_NAME --source . --project $GCP_PROJECT_ID --region us-central1${C_RESET}"
+    info ""
+    info "To deploy the frontend to Firebase Hosting:"
+    echo -e "   ${C_CYAN}cd frontend && npm install && npm run build && firebase deploy --only hosting --project $GCP_PROJECT_ID${C_RESET}"
 
     echo # Add a blank line for spacing
     info "Thanks for using Creative Studio!"
