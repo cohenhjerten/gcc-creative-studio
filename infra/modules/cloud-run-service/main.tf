@@ -18,10 +18,6 @@ resource "google_service_account" "run_sa" {
   display_name = "SA for ${var.service_name} (${var.environment}) Runtime"
 }
 
-resource "google_service_account" "trigger_sa" {
-  account_id   = "${var.resource_prefix}-${var.environment}-trig"
-  display_name = "SA for ${var.service_name} (${var.environment}) Trigger"
-}
 
 # --- Core Resources ---
 resource "google_artifact_registry_repository" "repo" {
@@ -126,31 +122,6 @@ resource "google_cloud_run_v2_service" "this" {
 }
 
 # --- Common IAM Bindings ---
-resource "google_project_iam_member" "logging_writer_binding" {
-  project = var.gcp_project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.trigger_sa.email}"
-}
-
-resource "google_artifact_registry_repository_iam_member" "ar_writer_binding" {
-  location   = var.gcp_region
-  repository = google_artifact_registry_repository.repo.name
-  role       = "roles/artifactregistry.writer"
-  member     = "serviceAccount:${google_service_account.trigger_sa.email}"
-}
-
-resource "google_cloud_run_v2_service_iam_member" "run_developer_binding" {
-  name     = google_cloud_run_v2_service.this.name
-  location = google_cloud_run_v2_service.this.location
-  role     = "roles/run.developer"
-  member   = "serviceAccount:${google_service_account.trigger_sa.email}"
-}
-
-resource "google_service_account_iam_member" "run_sa_user_binding" {
-  service_account_id = google_service_account.run_sa.name
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.trigger_sa.email}"
-}
 
 resource "google_project_iam_member" "aiplatform_user_binding" {
   project = var.gcp_project_id

@@ -19,22 +19,3 @@ resource "google_firebase_hosting_site" "this" {
   site_id = var.firebase_site_id
 }
 
-# 2. Create a dedicated Service Account for the frontend trigger
-resource "google_service_account" "trigger_sa" {
-  account_id   = "${var.resource_prefix}-${var.environment}-trig"
-  display_name = "SA for ${var.service_name} Trigger (${var.environment})"
-}
-
-# 3. Give the trigger SA permission to deploy to Firebase Hosting
-resource "google_project_iam_member" "firebase_admin" {
-  project = var.gcp_project_id
-  role    = "roles/firebasehosting.admin"
-  member  = "serviceAccount:${google_service_account.trigger_sa.email}"
-}
-
-# 4. Give the trigger SA permission to write logs
-resource "google_project_iam_member" "logging_writer" {
-  project = var.gcp_project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.trigger_sa.email}"
-}

@@ -17,9 +17,9 @@ output "service_url" {
   value       = google_cloud_run_v2_service.this.uri
 }
 
-output "trigger_sa_email" {
-  description = "The email of the service account used by the build trigger."
-  value       = google_service_account.trigger_sa.email
+output "run_sa_email" {
+  description = "The email of the service account used by the Cloud Run service."
+  value       = google_service_account.run_sa.email
 }
 
 output "service_name" {

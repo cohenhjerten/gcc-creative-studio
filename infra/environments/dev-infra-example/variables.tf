@@ -87,6 +87,7 @@ variable "apis_to_enable" {
   default = [
     "serviceusage.googleapis.com",     # Required to enable other APIs
     "iam.googleapis.com",              # Required for IAM management
+    "cloudbuild.googleapis.com",       # Required for gcloud run deploy --source
     "artifactregistry.googleapis.com", # Required for Artifact Registry
     "run.googleapis.com"               # Required for Cloud Run
   ]

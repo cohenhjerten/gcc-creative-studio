@@ -317,30 +317,79 @@ detect_repo_root() {
 
 cleanup_previous() {
     step "0" "Checking for Previous Installation"
-    prompt "Would you like to clean up resources from a previous installation attempt? (y/n)"
+
+    # Check if any non-template environment directories exist
+    local HAS_PREVIOUS=false
+    if [ -d "$REPO_ROOT/infra/environments" ]; then
+        for dir in "$REPO_ROOT/infra/environments"/*/; do
+            [ ! -d "$dir" ] && continue
+            local dir_name=$(basename "$dir")
+            if [ "$dir_name" != "dev-infra-example" ]; then
+                HAS_PREVIOUS=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$HAS_PREVIOUS" = false ]; then
+        info "No previous installation found. Continuing."
+        return
+    fi
+
+    prompt "A previous installation was detected. Would you like to clean it up before starting fresh? (y/n)"
     read -r REPLY < /dev/tty
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         info "Skipping cleanup."
         return
     fi
 
-    warn "This will remove local environment directories and state files."
-    warn "It will NOT destroy any cloud resources (use 'terraform destroy' for that)."
+    # Process each environment directory (except the template)
+    for dir in "$REPO_ROOT/infra/environments"/*/; do
+        [ ! -d "$dir" ] && continue
+        local dir_name=$(basename "$dir")
+        [ "$dir_name" = "dev-infra-example" ] && continue
 
-    # Clean up local environment directories (except the template)
-    if [ -d "$REPO_ROOT/infra/environments" ]; then
-        for dir in "$REPO_ROOT/infra/environments"/*/; do
-            local dir_name=$(basename "$dir")
-            if [ "$dir_name" != "dev-infra-example" ]; then
-                prompt "Remove environment directory '$dir_name'? (y/n)"
+        info "Found previous environment: '$dir_name'"
+
+        # --- Offer terraform destroy to clean up cloud resources ---
+        local tfvars_file="$dir/${dir_name}.tfvars"
+        if [ -f "$tfvars_file" ] && command -v terraform &> /dev/null; then
+            prompt "Run 'terraform destroy' to remove cloud resources for '$dir_name'? (y/n)"
+            warn "  This will DELETE all cloud infrastructure (Cloud Run, databases, buckets, etc.)."
+            read -r REPLY < /dev/tty
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                info "Running terraform destroy..."
+                pushd "$dir" > /dev/null
+                if terraform init -reconfigure 2>/dev/null && terraform destroy -auto-approve -var-file="$tfvars_file" 2>/dev/null; then
+                    success "Cloud resources destroyed for '$dir_name'."
+                else
+                    warn "Terraform destroy failed or was incomplete. Some cloud resources may remain."
+                fi
+                popd > /dev/null
+            fi
+        fi
+
+        # --- Offer to clear the Terraform state bucket ---
+        local backend_file="$dir/backend.tf"
+        if [ -f "$backend_file" ]; then
+            local bucket_name=$(grep 'bucket' "$backend_file" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            if [ -n "$bucket_name" ]; then
+                prompt "Delete Terraform state from bucket 'gs://${bucket_name}'? (y/n)"
                 read -r REPLY < /dev/tty
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
-                    rm -rf "$dir"
-                    success "Removed '$dir_name'."
+                    gsutil -m rm -r "gs://${bucket_name}/**" 2>/dev/null && success "State bucket contents cleared." || warn "Could not clear bucket (it may be empty or inaccessible)."
                 fi
             fi
-        done
-    fi
+        fi
+
+        # --- Remove the local environment directory ---
+        prompt "Remove local environment directory '$dir_name'? (y/n)"
+        read -r REPLY < /dev/tty
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$dir"
+            success "Removed '$dir_name'."
+        fi
+    done
 
     # Clean up Cloud SQL proxy binary
     if [ -f "$REPO_ROOT/cloud-sql-proxy" ]; then
@@ -350,12 +399,8 @@ cleanup_previous() {
 
     # Clean up Python venv
     if [ -d "$REPO_ROOT/backend/.venv" ]; then
-        prompt "Remove Python virtual environment (backend/.venv)? (y/n)"
-        read -r REPLY < /dev/tty
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            rm -rf "$REPO_ROOT/backend/.venv"
-            info "Removed backend/.venv."
-        fi
+        rm -rf "$REPO_ROOT/backend/.venv"
+        info "Removed Python virtual environment."
     fi
 
     # Reset state
@@ -370,8 +415,8 @@ configure_environment() {
     step 5 "Configuring Terraform Environment";
     cd "$REPO_ROOT/infra"
     if [ -z "$ENV_NAME" ]; then
-        prompt "What would you like to call this deployment environment?"; read -p "   Environment Name [default value: $DEFAULT_ENV_NAME]: " ENV_NAME < /dev/tty
-        ENV_NAME=${ENV_NAME:-$DEFAULT_ENV_NAME}
+        ENV_NAME="$DEFAULT_ENV_NAME"
+        info "Using default environment name: $ENV_NAME"
     else info "Using previously configured environment: $ENV_NAME"; fi
     ENV_DIR="environments/$ENV_NAME";
     TFVARS_FILE_PATH="$REPO_ROOT/infra/$ENV_DIR/$ENV_NAME.tfvars"
@@ -546,9 +591,7 @@ run_terraform() {
     step 10 "Deploying Infrastructure with Terraform";
 	TFVARS_FILE_PATH="$REPO_ROOT/infra/environments/$ENV_NAME/$ENV_NAME.tfvars"; info "Navigating to $REPO_ROOT/infra/environments/$ENV_NAME..."; cd "$REPO_ROOT/infra/environments/$ENV_NAME"
     info "Initializing Terraform..."; terraform init -reconfigure
-    info "Planning Terraform changes..."; terraform plan -var-file="$TFVARS_FILE_PATH"
-    prompt "\nTerraform is ready to apply the changes. This will create the infrastructure, including empty secret shells."; prompt "Do you want to proceed with 'terraform apply'? (y/n)"; read -r REPLY < /dev/tty
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then warn "Apply cancelled."; return; fi
+    info "Running: terraform apply -auto-approve -var-file=\"$TFVARS_FILE_PATH\" -parallelism=30"
     terraform apply -auto-approve -var-file="$TFVARS_FILE_PATH" -parallelism=30
 }
 
