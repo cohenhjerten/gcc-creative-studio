@@ -7,17 +7,27 @@
 #   $ gcloud topic gcloudignore
 #
 .gcloudignore
-# If you would like to upload your .git directory, .gitignore file or files
-# from your .gitignore file, remove the corresponding line
-# below:
 .git
 .gitignore
+
+# Python virtual environments
+.venv
+venv/
+my_env/
+env/
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+.env.*
+.local.env
 
 # Thumbnails Folder
 /thumbnails
 
-# Python pycache:
-__pycache__/
 # Ignored by the build system
 /setup.cfg
-my_env

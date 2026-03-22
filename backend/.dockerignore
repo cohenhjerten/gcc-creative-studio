@@ -1,0 +1,15 @@
+.git
+.gitignore
+.gcloudignore
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+my_env/
+.env
+.local.env
+.env.*
+thumbnails/
+setup.cfg

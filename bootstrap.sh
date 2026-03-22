@@ -269,6 +269,7 @@ setup_project() {
         prompt "Found project '$GCP_PROJECT_ID' from a previous run. Use this project? (y/n)"; read -r REPLY < /dev/tty
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             gcloud config set project "$GCP_PROJECT_ID"
+            gcloud auth application-default set-quota-project "$GCP_PROJECT_ID" > /dev/null 2>&1 || true
             success "Project '$GCP_PROJECT_ID' is configured."
             return
         fi
@@ -279,6 +280,7 @@ setup_project() {
             GCP_PROJECT_ID=$CURRENT_GCLOUD_PROJECT
             info "Using existing project '$GCP_PROJECT_ID'."
             gcloud config set project "$GCP_PROJECT_ID"
+            gcloud auth application-default set-quota-project "$GCP_PROJECT_ID" > /dev/null 2>&1 || true
             success "Project '$GCP_PROJECT_ID' is configured."
             return
         fi
@@ -293,6 +295,7 @@ setup_project() {
         info "Linking billing account '$BILLING_ACCOUNT_ID'..."; gcloud beta billing projects link "$GCP_PROJECT_ID" --billing-account="$BILLING_ACCOUNT_ID"
     fi
     info "Setting gcloud config to use project '$GCP_PROJECT_ID'..."; gcloud config set project "$GCP_PROJECT_ID"
+    gcloud auth application-default set-quota-project "$GCP_PROJECT_ID" > /dev/null 2>&1 || true
     success "Project '$GCP_PROJECT_ID' is configured."
 }
 
@@ -488,6 +491,13 @@ handle_manual_steps() {
 
 setup_firebase_app() {
     step 7 "Automating Firebase Web App Configuration"; cd "$REPO_ROOT"
+
+    if ! firebase projects:list > /dev/null 2>&1; then
+        warn "Firebase CLI is not authenticated."
+        info "Running 'firebase login --no-localhost'..."
+        firebase login --no-localhost
+    fi
+
 
     info "Checking for existing Firebase web app named '$FE_SERVICE_NAME'...";
     if ! firebase apps:list --project="$GCP_PROJECT_ID" | grep -q "$FE_SERVICE_NAME"; then
@@ -744,6 +754,73 @@ seed_data() {
     trap - EXIT
 }
 
+deploy_applications() {
+    step 14 "Deploying Applications"
+    cd "$REPO_ROOT"
+    
+    info "Fixing default Compute Service Account permissions for Cloud Build..."
+    local PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_ID" --format="value(projectNumber)")
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+        --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+        --role="roles/storage.admin" --quiet > /dev/null 2>&1 || true
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+        --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+        --role="roles/artifactregistry.admin" --quiet > /dev/null 2>&1 || true
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+        --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+        --role="roles/logging.logWriter" --quiet > /dev/null 2>&1 || true
+
+    info "Deploying the backend to Cloud Run..."
+    if (cd backend && gcloud run deploy "$BE_SERVICE_NAME" --source . --project "$GCP_PROJECT_ID" --region us-central1 --quiet); then
+        success "Backend deployed successfully."
+    else
+        fail "Backend deployment failed."
+    fi
+
+    info "Deploying the frontend to Firebase Hosting..."
+    if [ -z "$AUTO_FIREBASE_SITE_ID" ]; then
+        AUTO_FIREBASE_SITE_ID=$(firebase hosting:sites:list --project="$GCP_PROJECT_ID" --json | jq -r '.result.sites[0].name | split("/") | last')
+    fi
+    sed -e "s/SITE_ID_PLACEHOLDER/$AUTO_FIREBASE_SITE_ID/g" \
+        -e "s/BACKEND_SERVICE_ID_PLACEHOLDER/$BE_SERVICE_NAME/g" \
+        frontend/firebase.json > frontend/firebase.json.tmp
+    mv frontend/firebase.json.tmp frontend/firebase.json
+
+    if ! (cd frontend && npm install && npm run build); then
+        fail "Frontend build failed. Please check the logs above."
+    fi
+
+    local max_retries=3
+    local retry_count=0
+    local deploy_success=0
+
+    while [ $retry_count -lt $max_retries ] && [ $deploy_success -eq 0 ]; do
+        if (cd frontend && firebase deploy --only hosting --project "$GCP_PROJECT_ID"); then
+            success "Frontend deployed successfully."
+            deploy_success=1
+            break
+        else
+            warn "Firebase deploy encountered an error (likely a Cloud Run mapping propagation delay)."
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -lt $max_retries ]; then
+                info "Waiting 30 seconds for Google routing to sync... (Retry $retry_count of $max_retries)"
+                sleep 30
+            fi
+        fi
+    done
+
+    if [ $deploy_success -eq 0 ]; then
+        fail "Frontend deployment completely failed after $max_retries retries."
+    fi
+
+    info "Restoring firebase.json placeholders to keep Git history clean..."
+    # Revert the specific dynamic IDs back to the universal templates purely cleanly
+    sed -e "s/$AUTO_FIREBASE_SITE_ID/SITE_ID_PLACEHOLDER/g" \
+        -e "s/$BE_SERVICE_NAME/BACKEND_SERVICE_ID_PLACEHOLDER/g" \
+        frontend/firebase.json > frontend/firebase.json.tmp
+    mv frontend/firebase.json.tmp frontend/firebase.json
+}
+
 
 
 # --- Main Execution ---
@@ -774,6 +851,16 @@ main() {
     # Offer cleanup before starting
     cleanup_previous
 
+    # Ensure authentication is fully set up before proceeding
+    step "Auth" "Verifying Application Default Credentials"
+    if ! gcloud auth application-default print-access-token > /dev/null 2>&1; then
+        warn "Application Default Credentials are not set."
+        info "Running 'gcloud auth application-default login --no-browser'..."
+        gcloud auth application-default login --no-browser
+    fi
+    success "Authentication verified!"
+
+
     declare -a steps_to_run=(
         "check_prerequisites"
         "check_and_install_terraform"
@@ -787,6 +874,7 @@ main() {
         "update_oauth_client"
         "update_secrets"
         "seed_data"
+        "deploy_applications"
     )
     for i in "${!steps_to_run[@]}"; do
         step_num=$((i + 1))
@@ -799,8 +887,8 @@ main() {
         fi
     done
 
-    step 14 "Deployment Complete!"
-    info "Fetching your application URLs...";
+    step 15 "Platform Ready!"
+    info "Fetching your newly deployed application URLs...";
     cd "$REPO_ROOT/infra/environments/$ENV_NAME"
 
     # Try to get the frontend URL from terraform output, but handle the error
@@ -820,16 +908,8 @@ main() {
         warn "Could not find 'backend_service_url' in Terraform outputs."
     fi
 
-    success "Your infrastructure is ready."
+    success "Your applications are live!"
     echo "------------------------------------------------------------------"; echo -e "   Frontend URL: ${C_YELLOW}${FRONTEND_URL}${C_RESET}"; echo -e "   Backend URL:  ${C_YELLOW}${BACKEND_URL}${C_RESET}"; echo "------------------------------------------------------------------"
-    info "The infrastructure has been provisioned. You will need to build and deploy"
-    info "the frontend and backend applications separately."
-    info ""
-    info "To deploy the backend to Cloud Run:"
-    echo -e "   ${C_CYAN}cd backend && gcloud run deploy $BE_SERVICE_NAME --source . --project $GCP_PROJECT_ID --region us-central1${C_RESET}"
-    info ""
-    info "To deploy the frontend to Firebase Hosting:"
-    echo -e "   ${C_CYAN}cd frontend && npm install && npm run build && firebase deploy --only hosting --project $GCP_PROJECT_ID${C_RESET}"
 
     echo # Add a blank line for spacing
     info "Thanks for using Creative Studio!"
