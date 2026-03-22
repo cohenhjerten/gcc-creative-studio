@@ -529,19 +529,21 @@ populate_oauth_secrets() {
     local AUTH_TOKEN=$(gcloud auth print-access-token)
     local APP_ID=$(firebase apps:list --project="$GCP_PROJECT_ID" --json | jq -r --arg name "$FE_SERVICE_NAME" '.result[] | select(.displayName == $name) | .appId')
 
-    if [ -z "$APP_ID" ]; then
+    if [ -n "$AUTO_OAUTH_CLIENT_ID" ] && [ "$AUTO_OAUTH_CLIENT_ID" != "null" ]; then
+        info "Using existing OAuth Client ID from previous configuration."
+    elif [ -z "$APP_ID" ]; then
         warn "Could not find Firebase App ID for '$FE_SERVICE_NAME'. Skipping OAuth secret population."
         return
+    else
+        # Use the Firebase Management API to get the auth config, which includes the client ID.
+        local API_RESPONSE=$(curl -s -X GET \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            "https://firebase.googleapis.com/v1beta1/projects/$GCP_PROJECT_ID/webApps/$APP_ID/config")
+        
+        AUTO_OAUTH_CLIENT_ID=$(echo "$API_RESPONSE" | jq -r '.oauthClientId')
     fi
 
-    # Use the Firebase Management API to get the auth config, which includes the client ID.
-    local API_RESPONSE=$(curl -s -X GET \
-        -H "Authorization: Bearer $AUTH_TOKEN" \
-        "https://firebase.googleapis.com/v1beta1/projects/$GCP_PROJECT_ID/webApps/$APP_ID/config")
-
     # The client ID is the one NOT associated with the API key.
-    AUTO_OAUTH_CLIENT_ID=$(echo "$API_RESPONSE" | jq -r '.oauthClientId')
-
     if [ -z "$AUTO_OAUTH_CLIENT_ID" ] || [ "$AUTO_OAUTH_CLIENT_ID" == "null" ]; then
         warn "Could not automatically find the OAuth Client ID via API."
         info "Please perform the following manual steps:"
