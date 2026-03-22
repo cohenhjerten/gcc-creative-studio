@@ -3,6 +3,7 @@ __pycache__
 venv
 local/
 .env
+.env.backup
 .DS_Store
 
 .aider*

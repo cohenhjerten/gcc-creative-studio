@@ -786,6 +786,43 @@ deploy_applications() {
         frontend/firebase.json > frontend/firebase.json.tmp
     mv frontend/firebase.json.tmp frontend/firebase.json
 
+    info "Fetching secrets dynamically from Secret Manager..."
+    local DYNAMIC_API_KEY=$(gcloud secrets versions access latest --secret="FIREBASE_API_KEY" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_AUTH_DOMAIN=$(gcloud secrets versions access latest --secret="FIREBASE_AUTH_DOMAIN" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_PROJECT_ID=$(gcloud secrets versions access latest --secret="FIREBASE_PROJECT_ID" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_STORAGE_BUCKET=$(gcloud secrets versions access latest --secret="FIREBASE_STORAGE_BUCKET" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_MESSAGING_SENDER_ID=$(gcloud secrets versions access latest --secret="FIREBASE_MESSAGING_SENDER_ID" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_APP_ID=$(gcloud secrets versions access latest --secret="FIREBASE_APP_ID" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_MEASUREMENT_ID=$(gcloud secrets versions access latest --secret="FIREBASE_MEASUREMENT_ID" --project="$GCP_PROJECT_ID")
+    local DYNAMIC_GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="GOOGLE_CLIENT_ID" --project="$GCP_PROJECT_ID")
+
+    info "Writing Firebase configuration into the Angular frontend..."
+    # Preserve local existing work by backing up the untracked development config
+    if [ -f "frontend/src/environments/environment.development.ts" ]; then
+        mv "frontend/src/environments/environment.development.ts" "frontend/src/environments/environment.development.ts.deploy.bak"
+    fi
+
+    cat <<EOF > frontend/src/environments/environment.development.ts
+export const environment = {
+  firebase: {
+    apiKey: "${DYNAMIC_API_KEY}",
+    authDomain: "${DYNAMIC_AUTH_DOMAIN}",
+    projectId: "${DYNAMIC_PROJECT_ID}",
+    storageBucket: "${DYNAMIC_STORAGE_BUCKET}",
+    messagingSenderId: "${DYNAMIC_MESSAGING_SENDER_ID}",
+    appId: "${DYNAMIC_APP_ID}",
+    measurementId: "${DYNAMIC_MEASUREMENT_ID}"
+  },
+  production: true,
+  isLocal: false,
+  GOOGLE_CLIENT_ID: "${DYNAMIC_GOOGLE_CLIENT_ID}",
+  backendURL: '/api',
+  EMAIL_REGEX: /^(([^<>()[\]\\\\.,;:\s@"]+(\.[^<>()[\]\\\\.,;:\s@"]+)*)|(".+"))@((\[\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/,
+  ADMIN: 'admin',
+};
+EOF
+    cp frontend/src/environments/environment.development.ts frontend/src/environments/environment.prod.ts
+
     if ! (cd frontend && npm install && npm run build); then
         fail "Frontend build failed. Please check the logs above."
     fi
@@ -819,6 +856,17 @@ deploy_applications() {
         -e "s/$BE_SERVICE_NAME/BACKEND_SERVICE_ID_PLACEHOLDER/g" \
         frontend/firebase.json > frontend/firebase.json.tmp
     mv frontend/firebase.json.tmp frontend/firebase.json
+
+    info "Restoring Angular environment templates to keep Git history clean..."
+    # Restore the tracked .prod.ts to its placeholder state
+    git restore frontend/src/environments/environment.prod.ts || true
+
+    # Respect the user's previous local setup: restore if we backed it up, otherwise clean up our transient config
+    if [ -f "frontend/src/environments/environment.development.ts.deploy.bak" ]; then
+        mv "frontend/src/environments/environment.development.ts.deploy.bak" "frontend/src/environments/environment.development.ts"
+    else
+        rm -f frontend/src/environments/environment.development.ts
+    fi
 }
 
 
